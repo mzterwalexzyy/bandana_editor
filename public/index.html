@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bandana Editor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* --- CSS (from style.css) --- */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+
+        #editor-container {
+            position: relative;
+            width: 512px;
+            height: 512px;
+            background-color: #fff;
+            box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05);
+            border-radius: 12px;
+            overflow: hidden;
+            touch-action: none; /* Prevents unwanted browser scrolling during vertical drag */
+        }
+
+        #pfp-image {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        #bandana-wrapper {
+            position: absolute;
+            top: 0;
+            left: 0;
+            display: inline-block;
+            cursor: move;
+            transform-origin: top left;
+            opacity: 1; 
+            z-index: 5; /* Ensure wrapper is on top */
+            /* TEMP VISUAL AID: Re-enabling background so you can see the "big wrapper" */
+            background-color: rgba(79, 70, 229, 0.2); 
+            /* You should remove this line once the bandana is properly cropped */
+        }
+
+        #bandana-overlay {
+            display: block;
+            width: 100%; /* Fill the wrapper */
+            height: 100%; /* Fill the wrapper */
+            object-fit: contain;
+            pointer-events: none; /* Allows click events to pass to the wrapper */
+            transform-origin: 50% 50%; 
+        }
+
+        #resize-handle {
+            width: 16px;
+            height: 16px;
+            background: #4f46e5;
+            position: absolute;
+            bottom: -8px; 
+            right: -8px; 
+            cursor: nwse-resize;
+            border-radius: 50%;
+            border: 2px solid #fff;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen p-8 bg-gray-100">
+
+    <div class="text-center max-w-xl w-full mb-6">
+        <h1 class="text-3xl font-bold text-gray-800 mb-2">Bandana Position Editor</h1>
+        <p class="text-gray-600">Upload a PFP, then drag, resize, rotate, skew, or use arrow keys to position the bandana perfectly.</p>
+    </div>
+
+    <input type="file" id="fileInput" accept="image/*" class="mb-4 p-3 border rounded-lg shadow-sm bg-white hover:bg-gray-50">
+
+    <div class="flex space-x-4 mb-4">
+        <label>Rotate: <span id="rotateValue">0</span>° <input type="range" id="rotateSlider" min="-180" max="180" value="0"></label>
+        <label>Skew X: <span id="skewXValue">0</span>° <input type="range" id="skewXSlider" min="-45" max="45" value="0"></label>
+        <label>Skew Y: <span id="skewYValue">0</span>° <input type="range" id="skewYSlider" min="-45" max="45" value="0"></label>
+    </div>
+
+    <div id="editor-container" class="mb-6">
+        <img id="pfp-image" src="https://placehold.co/512x512/3b82f6/ffffff?text=Upload+Your+PFP" alt="Profile Picture">
+
+        <div id="bandana-wrapper">
+            <!-- Using the file name you explicitly specified -->
+            <img id="bandana-overlay" src="bandana.png" alt="Bandana Overlay"> 
+            <div id="resize-handle"></div>
+        </div>
+    </div>
+
+    <div class="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+        <button id="downloadButton" disabled
+                class="px-6 py-3 bg-indigo-500 text-white font-semibold rounded-xl shadow-lg hover:bg-indigo-600 disabled:bg-indigo-300">
+            Download Final PFP
+        </button>
+        <div id="positionDisplay" class="text-sm text-gray-500 p-3 bg-gray-100 rounded-lg hidden sm:block">
+            X: 0, Y: 0, W: 0, H: 0, R:0°, SX:0°, SY:0°
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const pfpImage = document.getElementById('pfp-image');
+        const wrapper = document.getElementById('bandana-wrapper');
+        const bandana = document.getElementById('bandana-overlay');
+        const handle = document.getElementById('resize-handle');
+        const editor = document.getElementById('editor-container');
+        const downloadButton = document.getElementById('downloadButton');
+        const positionDisplay = document.getElementById('positionDisplay');
+
+        const rotateSlider = document.getElementById('rotateSlider');
+        const skewXSlider = document.getElementById('skewXSlider');
+        const skewYSlider = document.getElementById('skewYSlider');
+        const rotateValueSpan = document.getElementById('rotateValue');
+        const skewXValueSpan = document.getElementById('skewXValue');
+        const skewYValueSpan = document.getElementById('skewYValue');
+
+        let isPfpLoaded = false;
+        let isDragging = false;
+        let dragOffset = { x: 0, y: 0 };
+        let isResizing = false;
+        let keysPressed = {};
+        const step = 10;
+        let lastTimestamp = 0;
+        const fps = 60;
+        const frameTime = 1000 / fps;
+        
+        let bandanaAspect = 1; // Will be calculated on load
+
+        // --- Clamp function to keep wrapper inside container ---
+        function clampPosition(x, y) {
+            // Use the wrapper's current size for accurate bounding
+            const maxX = editor.clientWidth - wrapper.offsetWidth;
+            const maxY = editor.clientHeight - wrapper.offsetHeight;
+
+            return {
+                x: Math.max(0, Math.min(x, maxX)),
+                y: Math.max(0, Math.min(y, maxY))
+            };
+        }
+
+        // --- Initialize Bandana Size and Aspect Ratio ---
+        function initializeBandana() {
+            // Use a temporary image object to get the natural aspect ratio of the bandana
+            const tempBandanaImage = new Image();
+            tempBandanaImage.onload = () => {
+                // If the image fails to load (e.g., wrong filename), this won't run.
+                // We assume bandana.png is correctly located.
+                bandanaAspect = tempBandanaImage.naturalHeight / tempBandanaImage.naturalWidth;
+                
+                // Set initial size (50% of editor width)
+                const initialBandanaWidth = editor.clientWidth * 0.5;
+                const initialBandanaHeight = initialBandanaWidth * bandanaAspect;
+                
+                wrapper.style.width = initialBandanaWidth + 'px';
+                wrapper.style.height = initialBandanaHeight + 'px';
+                
+                // Initialize position (Centered horizontally, slightly down)
+                wrapper.style.left = (editor.clientWidth - wrapper.offsetWidth) / 2 + 'px';
+                wrapper.style.top = (editor.clientHeight * 0.075) + 'px';
+
+                updateDisplay();
+            };
+            // Use the source for the bandana image
+            tempBandanaImage.src = bandana.src;
+        }
+
+        // Run initialization on script load
+        window.onload = initializeBandana;
+
+
+        // --- Update transform (rotate + skew) ---
+        function updateTransform() {
+            const r = rotateSlider.value;
+            const sx = skewXSlider.value;
+            const sy = skewYSlider.value;
+            bandana.style.transform = `rotate(${r}deg) skewX(${sx}deg) skewY(${sy}deg)`;
+            
+            rotateValueSpan.textContent = r;
+            skewXValueSpan.textContent = sx;
+            skewYValueSpan.textContent = sy;
+            
+            updateDisplay();
+        }
+        rotateSlider.addEventListener('input', updateTransform);
+        skewXSlider.addEventListener('input', updateTransform);
+        skewYSlider.addEventListener('input', updateTransform);
+
+        // --- Upload PFP ---
+        fileInput.addEventListener('change', e => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = ev => {
+                pfpImage.src = ev.target.result;
+                isPfpLoaded = true;
+                downloadButton.disabled = false;
+                // Re-initialize to ensure correct positioning after PFP load
+                initializeBandana(); 
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // --- Dragging Helper ---
+        const getClientCoords = (e) => {
+            if (e.touches && e.touches.length === 1) {
+                return { clientX: e.touches[0].clientX, clientY: e.touches[0].clientY };
+            }
+            return { clientX: e.clientX, clientY: e.clientY };
+        };
+
+        // --- Dragging Event Handlers (Combined Mouse/Touch) ---
+        function startDrag(e) {
+            // Only start dragging if the target is NOT the resize handle
+            if (e.target === handle) return;
+            e.preventDefault(); 
+            
+            isDragging = true;
+
+            const { clientX, clientY } = getClientCoords(e);
+            const containerRect = editor.getBoundingClientRect();
+
+            dragOffset.x = clientX - containerRect.left - wrapper.offsetLeft;
+            dragOffset.y = clientY - containerRect.top - wrapper.offsetTop;
+
+            document.addEventListener('mousemove', onDrag);
+            document.addEventListener('mouseup', endDrag);
+            document.addEventListener('touchmove', onTouchMove, { passive: false });
+            document.addEventListener('touchend', endDrag);
+        }
+        wrapper.addEventListener('mousedown', startDrag);
+        wrapper.addEventListener('touchstart', startDrag);
+
+
+        function onDrag(e) {
+            if (!isDragging) return;
+            
+            const { clientX, clientY } = getClientCoords(e);
+            const containerRect = editor.getBoundingClientRect();
+
+            let newX = clientX - containerRect.left - dragOffset.x;
+            let newY = clientY - containerRect.top - dragOffset.y;
+
+            const pos = clampPosition(newX, newY);
+            wrapper.style.left = pos.x + 'px';
+            wrapper.style.top = pos.y + 'px';
+            updateDisplay();
+        }
+
+        function onTouchMove(e) {
+            e.preventDefault();
+            onDrag(e);
+        }
+
+        function endDrag() {
+            isDragging = false;
+            document.removeEventListener('mousemove', onDrag);
+            document.removeEventListener('mouseup', endDrag);
+            document.removeEventListener('touchmove', onTouchMove);
+            document.removeEventListener('touchend', endDrag);
+        }
+
+        // --- Resizing Event Handlers (Combined Mouse/Touch) ---
+        function startResize(e) {
+            e.stopPropagation();
+            isResizing = true;
+            document.addEventListener('mousemove', onResize);
+            document.addEventListener('mouseup', endResize);
+            document.addEventListener('touchmove', onResize, { passive: false });
+            document.addEventListener('touchend', endResize);
+        }
+        handle.addEventListener('mousedown', startResize);
+        handle.addEventListener('touchstart', startResize);
+
+        function onResize(e) {
+            if (!isResizing) return;
+            e.preventDefault();
+            
+            const { clientX, clientY } = getClientCoords(e);
+            
+            const prevX = wrapper.offsetLeft;
+            const prevY = wrapper.offsetTop;
+            const containerRect = editor.getBoundingClientRect();
+            
+            const minSize = 50;
+            
+            // Calculate distance from the wrapper's top-left corner to the current mouse position
+            let targetWidth = clientX - containerRect.left - prevX; 
+
+            // Base the size on the width change to maintain aspect ratio
+            let newWidth = Math.max(minSize, targetWidth);
+            let newHeight = newWidth * bandanaAspect; 
+
+            // Clamp max size based on boundaries
+            if (prevX + newWidth > editor.clientWidth) {
+                newWidth = editor.clientWidth - prevX;
+                newHeight = newWidth * bandanaAspect;
+            }
+            if (prevY + newHeight > editor.clientHeight) {
+                newHeight = editor.clientHeight - prevY;
+                newWidth = newHeight / bandanaAspect;
+            }
+
+            // Apply the new size
+            wrapper.style.width = newWidth + 'px';
+            wrapper.style.height = newHeight + 'px';
+
+            updateDisplay();
+        }
+
+        function endResize() {
+            isResizing = false;
+            document.removeEventListener('mousemove', onResize);
+            document.removeEventListener('mouseup', endResize);
+            document.removeEventListener('touchmove', onResize);
+            document.removeEventListener('touchend', endResize);
+        }
+
+        // --- Keyboard movement ---
+        document.addEventListener('keydown', e => keysPressed[e.key] = true);
+        document.addEventListener('keyup', e => keysPressed[e.key] = false);
+
+        function handleKeyboard(timestamp) {
+            requestAnimationFrame(handleKeyboard);
+            
+            if (timestamp < lastTimestamp + frameTime) return;
+            lastTimestamp = timestamp;
+
+            if (document.activeElement === fileInput || isDragging || isResizing) return;
+
+            let dx = (keysPressed['ArrowRight'] ? step : 0) - (keysPressed['ArrowLeft'] ? step : 0);
+            let dy = (keysPressed['ArrowDown'] ? step : 0) - (keysPressed['ArrowUp'] ? step : 0);
+
+            if (dx !== 0 || dy !== 0) {
+                const newX = wrapper.offsetLeft + dx;
+                const newY = wrapper.offsetTop + dy;
+                const pos = clampPosition(newX, newY);
+                
+                wrapper.style.left = pos.x + 'px';
+                wrapper.style.top = pos.y + 'px';
+                updateDisplay();
+            }
+        }
+        requestAnimationFrame(handleKeyboard);
+
+
+        // --- Display ---
+        function updateDisplay() {
+            positionDisplay.textContent = `X:${Math.round(wrapper.offsetLeft)}, Y:${Math.round(wrapper.offsetTop)}, W:${Math.round(wrapper.offsetWidth)}, H:${Math.round(wrapper.offsetHeight)}, R:${rotateSlider.value}°, SX:${skewXSlider.value}°, SY:${skewYSlider.value}°`;
+        }
+
+        // --- Download ---
+        downloadButton.addEventListener('click', () => {
+            if (!isPfpLoaded) {
+                console.error("Please upload a Profile Picture first.");
+                return;
+            }
+
+            const x = wrapper.offsetLeft;
+            const y = wrapper.offsetTop;
+            const w = wrapper.offsetWidth; 
+            const h = wrapper.offsetHeight; 
+
+            const canvas = document.createElement('canvas');
+            canvas.width = editor.clientWidth;
+            canvas.height = editor.clientHeight;
+            const ctx = canvas.getContext('2d');
+
+            ctx.drawImage(pfpImage, 0, 0, canvas.width, canvas.height);
+
+            ctx.save();
+            ctx.translate(x + w / 2, y + h / 2); 
+            
+            const r = rotateSlider.value * Math.PI / 180;
+            const sx = Math.tan(skewXSlider.value * Math.PI / 180);
+            const sy = Math.tan(skewYSlider.value * Math.PI / 180);
+
+            ctx.transform(1, sy, sx, 1, 0, 0);
+            ctx.rotate(r);
+            
+            // Draw the bandana image at the center of the transformed wrapper
+            ctx.drawImage(bandana, -w / 2, -h / 2, w, h);
+            ctx.restore();
+
+            canvas.toBlob(blob => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'custom-bandana-pfp.png';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 'image/png');
+        });
+    </script>
+</body>
+</html>
