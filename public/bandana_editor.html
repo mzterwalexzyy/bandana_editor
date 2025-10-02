@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bandana Position Editor</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+
+    body {
+        font-family: 'Inter', sans-serif;
+        background-color: #f0f4f8;
+    }
+
+    #editor-container {
+        position: relative;
+        width: 512px;
+        height: 512px;
+        background-color: #fff;
+        box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05);
+        border-radius: 12px;
+        overflow: hidden;
+        touch-action: none;
+    }
+
+    #pfp-image {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    #bandana-wrapper {
+        position: absolute;
+        top: 0;
+        left: 0;
+        cursor: move;
+    }
+
+    #bandana-overlay {
+        display: block;
+        width: 200px;
+        height: auto;
+        pointer-events: auto;
+    }
+
+    #resize-handle {
+        width: 16px;
+        height: 16px;
+        background: #4f46e5;
+        position: absolute;
+        bottom: 0;
+        right: 0;
+        cursor: nwse-resize;
+        border-radius: 50%;
+        border: 2px solid #fff;
+    }
+</style>
+</head>
+<body class="p-8 flex flex-col items-center">
+
+<div class="max-w-xl w-full text-center mb-6">
+    <h1 class="text-3xl font-bold text-gray-800 mb-2">Bandana Position Editor</h1>
+    <p class="text-gray-600">Upload a PFP, then drag, resize, or use arrow keys to position the bandana perfectly.</p>
+</div>
+
+<input type="file" id="fileInput" accept="image/*"
+       class="mb-4 p-3 border border-gray-300 rounded-lg shadow-sm bg-white hover:bg-gray-50 transition duration-150">
+
+<div id="editor-container" class="mb-6">
+    <img id="pfp-image" src="https://placehold.co/512x512/3b82f6/ffffff?text=Upload+Your+PFP" alt="Profile Picture">
+
+    <div id="bandana-wrapper">
+        <img id="bandana-overlay" src="/bandana.png" alt="Bandana Overlay">
+        <div id="resize-handle"></div>
+    </div>
+</div>
+
+<div class="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+    <button id="downloadButton" disabled
+            class="px-6 py-3 bg-indigo-500 text-white font-semibold rounded-xl shadow-lg hover:bg-indigo-600 transition duration-150 disabled:bg-indigo-300">
+        Download Final PFP
+    </button>
+    <div id="positionDisplay" class="text-sm text-gray-500 p-3 bg-gray-100 rounded-lg hidden sm:block">
+        X: 0, Y: 0, W: 0, H: 0
+    </div>
+</div>
+
+<script>
+const fileInput = document.getElementById('fileInput');
+const pfpImage = document.getElementById('pfp-image');
+const wrapper = document.getElementById('bandana-wrapper');
+const bandana = document.getElementById('bandana-overlay');
+const handle = document.getElementById('resize-handle');
+const editorContainer = document.getElementById('editor-container');
+const downloadButton = document.getElementById('downloadButton');
+const positionDisplay = document.getElementById('positionDisplay');
+
+let isPfpLoaded = false;
+let isDragging = false;
+let dragOffset = {x:0, y:0};
+let isResizing = false;
+let keysPressed = {};
+let step = 10;
+
+// --- Helper: clamp bandana inside container ---
+function clampPosition(x, y) {
+    const maxX = editorContainer.offsetWidth - bandana.offsetWidth;
+    const maxY = editorContainer.offsetHeight - bandana.offsetHeight;
+    x = Math.max(0, Math.min(x, maxX));
+    y = Math.max(0, Math.min(y, maxY));
+    return { x, y };
+}
+
+// --- File Upload ---
+fileInput.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        pfpImage.src = ev.target.result;
+        isPfpLoaded = true;
+        downloadButton.disabled = false;
+        wrapper.style.opacity = 1;
+    };
+    reader.readAsDataURL(file);
+});
+
+// --- Initial Position after bandana loads ---
+bandana.addEventListener('load', () => {
+    wrapper.style.left = (editorContainer.offsetWidth - bandana.offsetWidth)/2 + 'px';
+    wrapper.style.top = (editorContainer.offsetHeight * 0.075) + 'px';
+    updateDisplay();
+});
+
+// --- Drag ---
+wrapper.addEventListener('mousedown', e => {
+    if (e.target === handle) return;
+    if (!isPfpLoaded) return;
+    isDragging = true;
+    dragOffset.x = e.clientX - wrapper.offsetLeft;
+    dragOffset.y = e.clientY - wrapper.offsetTop;
+    document.addEventListener('mousemove', onDrag);
+    document.addEventListener('mouseup', endDrag);
+});
+
+function onDrag(e) {
+    if (!isDragging) return;
+    let x = e.clientX - dragOffset.x;
+    let y = e.clientY - dragOffset.y;
+
+    const pos = clampPosition(x, y);
+    wrapper.style.left = pos.x + 'px';
+    wrapper.style.top = pos.y + 'px';
+    updateDisplay();
+}
+
+function endDrag() {
+    isDragging = false;
+    document.removeEventListener('mousemove', onDrag);
+    document.removeEventListener('mouseup', endDrag);
+}
+
+// --- Resize ---
+handle.addEventListener('mousedown', e => {
+    e.stopPropagation();
+    if (!isPfpLoaded) return;
+    isResizing = true;
+    document.addEventListener('mousemove', onResize);
+    document.addEventListener('mouseup', endResize);
+});
+
+function onResize(e) {
+    if (!isResizing) return;
+    const rect = wrapper.getBoundingClientRect();
+    let newWidth = e.clientX - rect.left;
+    const aspect = bandana.naturalHeight / bandana.naturalWidth;
+    let newHeight = newWidth * aspect;
+
+    // Clamp size to editor
+    newWidth = Math.max(50, Math.min(newWidth, editorContainer.offsetWidth));
+    newHeight = Math.max(50*aspect, Math.min(newHeight, editorContainer.offsetHeight));
+
+    bandana.style.width = newWidth + 'px';
+    bandana.style.height = newHeight + 'px';
+
+    // Clamp wrapper position after resizing
+    const pos = clampPosition(wrapper.offsetLeft, wrapper.offsetTop);
+    wrapper.style.left = pos.x + 'px';
+    wrapper.style.top = pos.y + 'px';
+    updateDisplay();
+}
+
+function endResize() {
+    isResizing = false;
+    document.removeEventListener('mousemove', onResize);
+    document.removeEventListener('mouseup', endResize);
+}
+
+// --- Keyboard Movement ---
+document.addEventListener('keydown', e => { keysPressed[e.key] = true; });
+document.addEventListener('keyup', e => { keysPressed[e.key] = false; });
+
+function handleKeyboard() {
+    if (!isPfpLoaded) return;
+    if (document.activeElement === fileInput) return;
+
+    let dx = (keysPressed['ArrowRight'] ? step : 0) - (keysPressed['ArrowLeft'] ? step : 0);
+    let dy = (keysPressed['ArrowDown'] ? step : 0) - (keysPressed['ArrowUp'] ? step : 0);
+
+    if (dx !== 0 || dy !== 0) {
+        const pos = clampPosition(wrapper.offsetLeft + dx, wrapper.offsetTop + dy);
+        wrapper.style.left = pos.x + 'px';
+        wrapper.style.top = pos.y + 'px';
+        updateDisplay();
+    }
+    requestAnimationFrame(handleKeyboard);
+}
+handleKeyboard();
+
+// --- Update Display ---
+function updateDisplay() {
+    positionDisplay.textContent = `X: ${Math.round(wrapper.offsetLeft)}, Y: ${Math.round(wrapper.offsetTop)}, W: ${Math.round(bandana.offsetWidth)}, H: ${Math.round(bandana.offsetHeight)}`;
+}
+
+// --- Download ---
+downloadButton.addEventListener('click', async () => {
+    if (!isPfpLoaded || !fileInput.files[0]) return;
+
+    downloadButton.textContent = 'Processing...';
+    downloadButton.disabled = true;
+
+    const file = fileInput.files[0];
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('bandanaX', Math.round(wrapper.offsetLeft));
+    formData.append('bandanaY', Math.round(wrapper.offsetTop));
+    formData.append('bandanaWidth', Math.round(bandana.offsetWidth));
+    formData.append('bandanaHeight', Math.round(bandana.offsetHeight));
+
+    try {
+        const response = await fetch('/api/generate-custom', { method: 'POST', body: formData });
+        if (!response.ok) throw new Error(`Server error: ${response.status}`);
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'custom-bandana-pfp.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        console.error('Download failed:', err);
+    } finally {
+        downloadButton.textContent = 'Download Final PFP';
+        downloadButton.disabled = false;
+    }
+});
+</script>
+</body>
+</html>
